@@ -67,9 +67,9 @@ except KeyError:
 
 
 MODEL_NAME = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
-MAX_OUTPUT_TOKENS = int(st.secrets.get("MAX_OUTPUT_TOKENS", 350))
-RAG_TOP_K = int(st.secrets.get("RAG_TOP_K", 2))
-CHAT_HISTORY_TURNS = int(st.secrets.get("CHAT_HISTORY_TURNS", 4))
+MAX_OUTPUT_TOKENS = int(st.secrets.get("MAX_OUTPUT_TOKENS", 220))
+RAG_TOP_K = int(st.secrets.get("RAG_TOP_K", 1))
+CHAT_HISTORY_TURNS = int(st.secrets.get("CHAT_HISTORY_TURNS", 2))
 STREAM_UPDATE_EVERY = max(1, int(st.secrets.get("STREAM_UPDATE_EVERY", 3)))
 
 
@@ -135,12 +135,40 @@ def build_recent_history(ui_messages: list[dict], max_turns: int) -> list[dict]:
     if max_turns <= 0:
         return []
 
-    recent_messages = ui_messages[-(max_turns * 2):]
-    history: list[dict] = []
+    return ui_messages[-(max_turns * 2):]
+
+
+def build_recent_history_text(ui_messages: list[dict], max_turns: int) -> str:
+    recent_messages = build_recent_history(ui_messages, max_turns)
+    if not recent_messages:
+        return ""
+
+    lines = ["Ngữ cảnh hội thoại gần nhất:"]
     for message in recent_messages:
-        role = "model" if message["role"] == "assistant" else "user"
-        history.append({"role": role, "parts": [{"text": message["content"]}]})
-    return history
+        speaker = "Aura" if message["role"] == "assistant" else "Bạn"
+        lines.append(f"{speaker}: {truncate_text(message['content'], 180)}")
+    return "\n".join(lines)
+
+
+def should_use_rag(query: str) -> bool:
+    normalized = query.strip().lower()
+    if len(normalized) <= 40:
+        return False
+
+    keywords = (
+        "trường",
+        "ngành",
+        "học",
+        "điểm",
+        "xét tuyển",
+        "học phí",
+        "tư vấn",
+        "thông tin",
+        "ngành học",
+        "đại học",
+        "cao đẳng",
+    )
+    return any(keyword in normalized for keyword in keywords)
 
 
 generation_config = genai.GenerationConfig(
@@ -183,16 +211,21 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
             message_placeholder = st.empty()
             full_response = ""
             try:
-                matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=RAG_TOP_K) if datasheet_kb else []
+                matches = []
+                if datasheet_kb and should_use_rag(prompt):
+                    matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=RAG_TOP_K)
 
-                full_prompt = prompt
+                prompt_sections: list[str] = []
+                recent_history_text = build_recent_history_text(st.session_state.ui_messages[:-1], CHAT_HISTORY_TURNS)
+                if recent_history_text:
+                    prompt_sections.append(recent_history_text)
+                prompt_sections.append(f"Tin nhắn mới nhất của bạn: {prompt}")
                 private_reference_context = build_private_reference_context(matches)
                 if private_reference_context:
-                    full_prompt += "\n\n" + private_reference_context
+                    prompt_sections.append(private_reference_context)
 
-                recent_history = build_recent_history(st.session_state.ui_messages[:-1], CHAT_HISTORY_TURNS)
-                chat_session = model.start_chat(history=recent_history)
-                response_stream = chat_session.send_message(full_prompt, stream=True)
+                full_prompt = "\n\n".join(prompt_sections)
+                response_stream = model.generate_content(full_prompt, stream=True)
 
                 for index, chunk in enumerate(response_stream, start=1):
                     chunk_text = getattr(chunk, "text", "")
