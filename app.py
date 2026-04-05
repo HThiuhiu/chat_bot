@@ -1,6 +1,6 @@
-import re
 import base64
 import html
+import re
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -23,8 +23,8 @@ def read_ui_text(filename: str) -> str:
     return ui_path.read_text(encoding="utf-8")
 
 
-def compact_html(html: str) -> str:
-    return re.sub(r">\s+<", "><", html.strip())
+def compact_html(raw_html: str) -> str:
+    return re.sub(r">\s+<", "><", raw_html.strip())
 
 
 def image_to_data_uri(relative_path: str) -> str:
@@ -51,23 +51,26 @@ st.markdown(f"<style>\n{styles_css}\n</style>", unsafe_allow_html=True)
 app_url = st.secrets.get("APP_URL", "https://chatbot-zuckxrzzsttqfgqedvwat3.streamlit.app/").strip()
 qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=160x160&data={quote_plus(app_url)}"
 st.markdown(compact_html(read_ui_text("education_line.html")), unsafe_allow_html=True)
-hero_html = (
-    read_ui_text("hero.html")
-    .replace("{{QR_URL}}", qr_url)
-)
+
+hero_html = read_ui_text("hero.html").replace("{{QR_URL}}", qr_url)
 st.markdown(compact_html(hero_html), unsafe_allow_html=True)
-showcase_html = (
-    read_ui_text("showcase.html")
-    .replace("{{QR_URL}}", qr_url)
-)
+
+showcase_html = read_ui_text("showcase.html").replace("{{QR_URL}}", qr_url)
 st.markdown(compact_html(showcase_html), unsafe_allow_html=True)
 
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
+    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=api_key)
 except KeyError:
-    st.error("🚨 Lỗi: Chưa cấu hình API Key trong file secrets.toml")
+    st.error("Lỗi: Chưa cấu hình API key trong file secrets.toml")
     st.stop()
+
+
+MODEL_NAME = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+MAX_OUTPUT_TOKENS = int(st.secrets.get("MAX_OUTPUT_TOKENS", 350))
+RAG_TOP_K = int(st.secrets.get("RAG_TOP_K", 2))
+CHAT_HISTORY_TURNS = int(st.secrets.get("CHAT_HISTORY_TURNS", 4))
+STREAM_UPDATE_EVERY = max(1, int(st.secrets.get("STREAM_UPDATE_EVERY", 3)))
 
 
 @st.cache_data(show_spinner=False)
@@ -128,18 +131,28 @@ def sanitize_model_response(text: str) -> str:
     return cleaned.strip()
 
 
-if "chat_session" not in st.session_state:
-    generation_config = genai.GenerationConfig(
-        temperature=0.55,
-        top_p=0.95,
-        max_output_tokens=700,
-    )
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        generation_config=generation_config,
-        system_instruction=SYSTEM_INSTRUCTION,
-    )
-    st.session_state.chat_session = model.start_chat(history=[])
+def build_recent_history(ui_messages: list[dict], max_turns: int) -> list[dict]:
+    if max_turns <= 0:
+        return []
+
+    recent_messages = ui_messages[-(max_turns * 2):]
+    history: list[dict] = []
+    for message in recent_messages:
+        role = "model" if message["role"] == "assistant" else "user"
+        history.append({"role": role, "parts": [{"text": message["content"]}]})
+    return history
+
+
+generation_config = genai.GenerationConfig(
+    temperature=0.55,
+    top_p=0.95,
+    max_output_tokens=MAX_OUTPUT_TOKENS,
+)
+model = genai.GenerativeModel(
+    model_name=MODEL_NAME,
+    generation_config=generation_config,
+    system_instruction=SYSTEM_INSTRUCTION,
+)
 
 if "ui_messages" not in st.session_state:
     st.session_state.ui_messages = []
@@ -148,8 +161,7 @@ if "ui_messages" not in st.session_state:
 st.markdown('<div class="chat-entry-label">Bắt đầu trò chuyện với Aura tại đây</div>', unsafe_allow_html=True)
 
 if st.button("🗑️ Xóa cuộc trò chuyện để bắt đầu lại"):
-    del st.session_state["chat_session"]
-    del st.session_state["ui_messages"]
+    st.session_state.pop("ui_messages", None)
     st.rerun()
 
 chat_container = st.container()
@@ -171,21 +183,28 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
             message_placeholder = st.empty()
             full_response = ""
             try:
-                matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=3) if datasheet_kb else []
+                matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=RAG_TOP_K) if datasheet_kb else []
 
                 full_prompt = prompt
                 private_reference_context = build_private_reference_context(matches)
                 if private_reference_context:
                     full_prompt += "\n\n" + private_reference_context
 
-                response_stream = st.session_state.chat_session.send_message(full_prompt, stream=True)
-                for chunk in response_stream:
-                    full_response += chunk.text
-                    safe_stream = html.escape(sanitize_model_response(full_response)).replace("\n", "<br>")
-                    message_placeholder.markdown(
-                        f'<div class="chat-copy chat-copy-assistant">{safe_stream}▌</div>',
-                        unsafe_allow_html=True,
-                    )
+                recent_history = build_recent_history(st.session_state.ui_messages[:-1], CHAT_HISTORY_TURNS)
+                chat_session = model.start_chat(history=recent_history)
+                response_stream = chat_session.send_message(full_prompt, stream=True)
+
+                for index, chunk in enumerate(response_stream, start=1):
+                    chunk_text = getattr(chunk, "text", "")
+                    if not chunk_text:
+                        continue
+                    full_response += chunk_text
+                    if index % STREAM_UPDATE_EVERY == 0:
+                        safe_stream = html.escape(sanitize_model_response(full_response)).replace("\n", "<br>")
+                        message_placeholder.markdown(
+                            f'<div class="chat-copy chat-copy-assistant">{safe_stream}▌</div>',
+                            unsafe_allow_html=True,
+                        )
 
                 safe_response = sanitize_model_response(full_response)
                 safe_final = html.escape(safe_response).replace("\n", "<br>")
@@ -194,5 +213,5 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
                     unsafe_allow_html=True,
                 )
                 st.session_state.ui_messages.append({"role": "assistant", "content": safe_response})
-            except Exception as e:
-                st.error(f"Aura đang mệt một chút, bạn đợi lát rồi thử lại nhé! ({e})")
+            except Exception as exc:
+                st.error(f"Aura đang mệt một chút, bạn đợi lát rồi thử lại nhé! ({exc})")
