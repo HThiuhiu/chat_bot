@@ -187,31 +187,13 @@ def is_short_emotional_prompt(query: str) -> bool:
     return any(keyword in normalized for keyword in keywords)
 
 
-def build_fast_emotional_reply(query: str) -> str:
-    normalized = query.strip().lower()
-
-    if "phải làm sao" in normalized or "làm sao" in normalized:
+def build_runtime_instruction(short_emotional_prompt: bool) -> str:
+    if short_emotional_prompt:
         return (
-            "Aura hiểu bạn đang buồn. Lúc này bạn thử làm 2 việc nhỏ thôi: uống chút nước và rời chỗ đó vài phút để thở chậm lại. "
-            "Nếu muốn, bạn kể Aura biết điều gì làm bạn nặng lòng nhất nhé."
+            "Ưu tiên trả lời trọn ý trong 2-3 câu ngắn. "
+            "Vẫn bám ngữ cảnh tham khảo nếu có, nhưng diễn đạt tự nhiên, cụ thể và không lộ nguồn dữ liệu."
         )
-
-    if any(keyword in normalized for keyword in ("stress", "áp lực", "mệt", "nản", "chán")):
-        return (
-            "Nghe như bạn đang bị quá tải rồi. Mình tạm đừng ép bản thân giải quyết hết mọi thứ trong một lúc, chỉ chọn 1 việc nhỏ nhất để làm trước thôi. "
-            "Bạn muốn Aura giúp gỡ từng phần không?"
-        )
-
-    if any(keyword in normalized for keyword in ("buồn", "tủi", "cô đơn", "khóc", "lo")):
-        return (
-            "Aura hiểu cảm giác đó không dễ chịu chút nào. Bạn không cần cố ổn ngay đâu, cứ cho mình chậm lại một chút và nghỉ một nhịp trước đã. "
-            "Bạn muốn nói tiếp chuyện gì đang làm bạn buồn nhất không?"
-        )
-
-    return (
-        "Aura đang ở đây với bạn. Mình cứ nói chậm thôi, từng chút một cũng được. "
-        "Bạn muốn bắt đầu từ điều đang làm bạn mệt nhất không?"
-    )
+    return "Trả lời ngắn gọn, đúng trọng tâm và bám ngữ cảnh tham khảo nếu có."
 
 
 generation_config = genai.GenerationConfig(
@@ -255,14 +237,17 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
             try:
                 short_emotional_prompt = is_short_emotional_prompt(prompt)
                 matches = []
-                if datasheet_kb and not short_emotional_prompt and should_use_rag(prompt):
-                    matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=RAG_TOP_K)
+                if datasheet_kb:
+                    top_k = 1 if short_emotional_prompt else (RAG_TOP_K if should_use_rag(prompt) else 0)
+                    if top_k > 0:
+                        matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=top_k)
 
                 prompt_sections: list[str] = []
                 history_turns = 0 if short_emotional_prompt else CHAT_HISTORY_TURNS
                 recent_history_text = build_recent_history_text(st.session_state.ui_messages[:-1], history_turns)
                 if recent_history_text:
                     prompt_sections.append(recent_history_text)
+                prompt_sections.append(build_runtime_instruction(short_emotional_prompt))
                 prompt_sections.append(f"Tin nhắn mới nhất của bạn: {prompt}")
 
                 private_reference_context = build_private_reference_context(matches)
@@ -271,7 +256,8 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
 
                 full_prompt = "\n\n".join(prompt_sections)
                 if short_emotional_prompt:
-                    full_response = build_fast_emotional_reply(prompt)
+                    response = model.generate_content(full_prompt, stream=False)
+                    full_response = getattr(response, "text", "")
                 else:
                     response_stream = model.generate_content(full_prompt, stream=True)
                     full_response = ""
