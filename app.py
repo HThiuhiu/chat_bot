@@ -187,6 +187,33 @@ def is_short_emotional_prompt(query: str) -> bool:
     return any(keyword in normalized for keyword in keywords)
 
 
+def build_fast_emotional_reply(query: str) -> str:
+    normalized = query.strip().lower()
+
+    if "phải làm sao" in normalized or "làm sao" in normalized:
+        return (
+            "Aura hiểu bạn đang buồn. Lúc này bạn thử làm 2 việc nhỏ thôi: uống chút nước và rời chỗ đó vài phút để thở chậm lại. "
+            "Nếu muốn, bạn kể Aura biết điều gì làm bạn nặng lòng nhất nhé."
+        )
+
+    if any(keyword in normalized for keyword in ("stress", "áp lực", "mệt", "nản", "chán")):
+        return (
+            "Nghe như bạn đang bị quá tải rồi. Mình tạm đừng ép bản thân giải quyết hết mọi thứ trong một lúc, chỉ chọn 1 việc nhỏ nhất để làm trước thôi. "
+            "Bạn muốn Aura giúp gỡ từng phần không?"
+        )
+
+    if any(keyword in normalized for keyword in ("buồn", "tủi", "cô đơn", "khóc", "lo")):
+        return (
+            "Aura hiểu cảm giác đó không dễ chịu chút nào. Bạn không cần cố ổn ngay đâu, cứ cho mình chậm lại một chút và nghỉ một nhịp trước đã. "
+            "Bạn muốn nói tiếp chuyện gì đang làm bạn buồn nhất không?"
+        )
+
+    return (
+        "Aura đang ở đây với bạn. Mình cứ nói chậm thôi, từng chút một cũng được. "
+        "Bạn muốn bắt đầu từ điều đang làm bạn mệt nhất không?"
+    )
+
+
 generation_config = genai.GenerationConfig(
     temperature=0.55,
     top_p=0.95,
@@ -244,12 +271,7 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
 
                 full_prompt = "\n\n".join(prompt_sections)
                 if short_emotional_prompt:
-                    message_placeholder.markdown(
-                        '<div class="chat-copy chat-copy-assistant">Aura đang trả lời ngắn gọn cho bạn...</div>',
-                        unsafe_allow_html=True,
-                    )
-                    response = model.generate_content(full_prompt, stream=False)
-                    full_response = getattr(response, "text", "")
+                    full_response = build_fast_emotional_reply(prompt)
                 else:
                     response_stream = model.generate_content(full_prompt, stream=True)
                     full_response = ""
