@@ -51,10 +51,8 @@ st.markdown(f"<style>\n{styles_css}\n</style>", unsafe_allow_html=True)
 app_url = st.secrets.get("APP_URL", "https://chatbot-zuckxrzzsttqfgqedvwat3.streamlit.app/").strip()
 qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=160x160&data={quote_plus(app_url)}"
 st.markdown(compact_html(read_ui_text("education_line.html")), unsafe_allow_html=True)
-
 hero_html = read_ui_text("hero.html").replace("{{QR_URL}}", qr_url)
 st.markdown(compact_html(hero_html), unsafe_allow_html=True)
-
 showcase_html = read_ui_text("showcase.html").replace("{{QR_URL}}", qr_url)
 st.markdown(compact_html(showcase_html), unsafe_allow_html=True)
 
@@ -62,14 +60,8 @@ try:
     api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
 except KeyError:
-    st.error("Lỗi: Chưa cấu hình API key trong file secrets.toml")
+    st.error("Lỗi: Chưa cấu hình API Key trong file secrets.toml")
     st.stop()
-
-
-MODEL_NAME = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
-MAX_OUTPUT_TOKENS = int(st.secrets.get("MAX_OUTPUT_TOKENS", 160))
-RAG_TOP_K = int(st.secrets.get("RAG_TOP_K", 1))
-CHAT_HISTORY_TURNS = int(st.secrets.get("CHAT_HISTORY_TURNS", 1))
 
 
 @st.cache_data(show_spinner=False)
@@ -99,10 +91,10 @@ def build_private_reference_context(matches: list[dict]) -> str:
     for idx, match in enumerate(matches, start=1):
         context_lines.append(
             f"- Mẫu tham khảo {idx}:\n"
-            f"  Diễn ngôn: {truncate_text(match['diễn_ngôn'], 400)}\n"
-            f"  Cảm xúc: {truncate_text(match['cảm_xúc'], 180)}\n"
-            f"  Phán xét: {truncate_text(match['phán_xét'], 180)}\n"
-            f"  Thẩm giá: {truncate_text(match['thẩm_giá'], 180)}"
+            f"  Diễn ngôn: {truncate_text(match['diễn_ngôn'], 600)}\n"
+            f"  Cảm xúc: {truncate_text(match['cảm_xúc'], 300)}\n"
+            f"  Phán xét: {truncate_text(match['phán_xét'], 300)}\n"
+            f"  Thẩm giá: {truncate_text(match['thẩm_giá'], 300)}"
         )
 
     return "\n".join(context_lines)
@@ -130,82 +122,18 @@ def sanitize_model_response(text: str) -> str:
     return cleaned.strip()
 
 
-def build_recent_history_text(ui_messages: list[dict], max_turns: int) -> str:
-    if max_turns <= 0:
-        return ""
-
-    recent_messages = ui_messages[-(max_turns * 2):]
-    if not recent_messages:
-        return ""
-
-    lines = ["Ngữ cảnh hội thoại gần nhất:"]
-    for message in recent_messages:
-        speaker = "Aura" if message["role"] == "assistant" else "Bạn"
-        lines.append(f"{speaker}: {truncate_text(message['content'], 120)}")
-    return "\n".join(lines)
-
-
-def should_use_rag(query: str) -> bool:
-    normalized = query.strip().lower()
-    if len(normalized) <= 40:
-        return False
-
-    keywords = (
-        "trường",
-        "ngành",
-        "học",
-        "điểm",
-        "xét tuyển",
-        "học phí",
-        "tư vấn",
-        "thông tin",
-        "ngành học",
-        "đại học",
-        "cao đẳng",
+if "chat_session" not in st.session_state:
+    generation_config = genai.GenerationConfig(
+        temperature=0.55,
+        top_p=0.95,
+        max_output_tokens=700,
     )
-    return any(keyword in normalized for keyword in keywords)
-
-
-def is_short_emotional_prompt(query: str) -> bool:
-    normalized = query.strip().lower()
-    if len(normalized) > 60:
-        return False
-
-    keywords = (
-        "buồn",
-        "mệt",
-        "chán",
-        "stress",
-        "lo",
-        "tủi",
-        "cô đơn",
-        "khóc",
-        "nản",
-        "áp lực",
-        "phải làm sao",
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        generation_config=generation_config,
+        system_instruction=SYSTEM_INSTRUCTION,
     )
-    return any(keyword in normalized for keyword in keywords)
-
-
-def build_runtime_instruction(short_emotional_prompt: bool) -> str:
-    if short_emotional_prompt:
-        return (
-            "Ưu tiên trả lời trọn ý trong 2-3 câu ngắn. "
-            "Vẫn bám ngữ cảnh tham khảo nếu có, nhưng diễn đạt tự nhiên, cụ thể và không lộ nguồn dữ liệu."
-        )
-    return "Trả lời ngắn gọn, đúng trọng tâm và bám ngữ cảnh tham khảo nếu có."
-
-
-generation_config = genai.GenerationConfig(
-    temperature=0.55,
-    top_p=0.95,
-    max_output_tokens=MAX_OUTPUT_TOKENS,
-)
-model = genai.GenerativeModel(
-    model_name=MODEL_NAME,
-    generation_config=generation_config,
-    system_instruction=SYSTEM_INSTRUCTION,
-)
+    st.session_state.chat_session = model.start_chat(history=[])
 
 if "ui_messages" not in st.session_state:
     st.session_state.ui_messages = []
@@ -214,6 +142,7 @@ if "ui_messages" not in st.session_state:
 st.markdown('<div class="chat-entry-label">Bắt đầu trò chuyện với Aura tại đây</div>', unsafe_allow_html=True)
 
 if st.button("🗑️ Xóa cuộc trò chuyện để bắt đầu lại"):
+    st.session_state.pop("chat_session", None)
     st.session_state.pop("ui_messages", None)
     st.rerun()
 
@@ -234,37 +163,26 @@ if prompt := st.chat_input("Hôm nay của bạn thế nào? Hãy kể Aura nghe
             render_chat_content("user", prompt)
         with st.chat_message("assistant", avatar=assistant_avatar_uri):
             message_placeholder = st.empty()
+            full_response = ""
             try:
-                short_emotional_prompt = is_short_emotional_prompt(prompt)
-                matches = []
-                if datasheet_kb:
-                    top_k = 1 if short_emotional_prompt else (RAG_TOP_K if should_use_rag(prompt) else 0)
-                    if top_k > 0:
-                        matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=top_k)
+                matches = retrieve_datasheet_matches(prompt, datasheet_kb, top_k=3) if datasheet_kb else []
 
-                prompt_sections: list[str] = []
-                history_turns = 0 if short_emotional_prompt else CHAT_HISTORY_TURNS
-                recent_history_text = build_recent_history_text(st.session_state.ui_messages[:-1], history_turns)
-                if recent_history_text:
-                    prompt_sections.append(recent_history_text)
-                prompt_sections.append(build_runtime_instruction(short_emotional_prompt))
-                prompt_sections.append(f"Tin nhắn mới nhất của bạn: {prompt}")
-
+                full_prompt = prompt
                 private_reference_context = build_private_reference_context(matches)
                 if private_reference_context:
-                    prompt_sections.append(private_reference_context)
+                    full_prompt += "\n\n" + private_reference_context
 
-                full_prompt = "\n\n".join(prompt_sections)
-                if short_emotional_prompt:
-                    response = model.generate_content(full_prompt, stream=False)
-                    full_response = getattr(response, "text", "")
-                else:
-                    response_stream = model.generate_content(full_prompt, stream=True)
-                    full_response = ""
-                    for chunk in response_stream:
-                        chunk_text = getattr(chunk, "text", "")
-                        if chunk_text:
-                            full_response += chunk_text
+                response_stream = st.session_state.chat_session.send_message(full_prompt, stream=True)
+                for chunk in response_stream:
+                    chunk_text = getattr(chunk, "text", "")
+                    if not chunk_text:
+                        continue
+                    full_response += chunk_text
+                    safe_stream = html.escape(sanitize_model_response(full_response)).replace("\n", "<br>")
+                    message_placeholder.markdown(
+                        f'<div class="chat-copy chat-copy-assistant">{safe_stream}▌</div>',
+                        unsafe_allow_html=True,
+                    )
 
                 safe_response = sanitize_model_response(full_response)
                 safe_final = html.escape(safe_response).replace("\n", "<br>")
